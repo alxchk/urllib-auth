@@ -17,7 +17,7 @@ not desirable.
 
 setup(
     name='python-ntlm',
-    version='1.1.0',
+    version='1.1.1',
     description='Python library that provides NTLM support, including an authentication handler for urllib2. Works with pass-the-hash in additon to password authentication.',
     long_description=long_description,
     author='Matthijs Mullender',
@@ -33,6 +33,7 @@ setup(
             "ntlm_example_extended=ntlm_examples.extended:main",
         ]
     },
+    install_requires=['pycryptodome'],
     license="GNU Lesser GPL",
     # See https://pypi.python.org/pypi?%3Aaction=list_classifiers
     classifiers=[
