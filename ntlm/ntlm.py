@@ -100,12 +100,15 @@ NTLM_MsAvRestrictions = 8
 
 def as_bytes(x, coding='latin1'):
     if bytes == str:
-        if isinstance(x, long):
+        if isinstance(x, (int, long)):
             return chr(x)
+
+        return x.encode(coding)
+
     elif isinstance(x, int):
         return bytes((x,))
 
-    if not isinstance(x, bytes):
+    elif not isinstance(x, bytes):
         return x.encode(coding)
 
     return x
@@ -455,7 +458,6 @@ def create_NT_hashed_password_v2(passwd, user, domain):
     digest = create_NT_hashed_password_v1(passwd)
 
     return hmac.new(digest, (user.upper()+domain).encode('utf-16le')).digest()
-    return digest
 
 
 def create_sessionbasekey(password):
