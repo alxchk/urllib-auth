@@ -137,21 +137,15 @@ class Authentication(object):
                 'gssflags': flags
             })
 
-            server = service + '@' + hostname
-
             if has_gssapi_support:
                 del kwargs['user']
-                del kwargs['password']
                 del kwargs['domain']
 
-                need_inquire_cred = True
-
-                if password:
-                    raise NotImplementedError(
-                        "ccs-kerberos doesn't support password auth")
-
-            if user:
-                principal = user + '@' + hostname
+                if user and domain:
+                    principal = user + '@' + domain
+                
+                if not kwargs['password']:
+                    need_inquire_cred = True
 
         elif has_sspi_ntlm_support and method == METHOD_NTLM:
             # This is only for SSPI
@@ -161,9 +155,20 @@ class Authentication(object):
         else:
             raise NotImplementedError('No supported auth methods')
 
-        result, self._ctx = kerberos.authGSSClientInit(
-            server, principal, **kwargs
-        )
+        try:
+            result, self._ctx = kerberos.authGSSClientInit(
+                server, principal, **kwargs
+            )
+
+        except TypeError:
+            if need_inquire_cred and password:
+                raise NotImplementedError(
+                    "ccs-kerberos doesn't support password auth")
+
+                del kwargs['password']
+                result, self._ctx = kerberos.authGSSClientInit(
+                    server, principal, **kwargs
+                )
 
         if result < 0:
             self.logger.error('GSSAPI: authGSSClientInit Result: %d', result)

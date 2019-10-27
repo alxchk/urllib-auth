@@ -24,7 +24,7 @@ if sys.platform == 'win32':
     requirements.append('winkerberos')
     dependencies.append('https://github.com/alxchk/winkerberos/archive/master.zip')
 else:
-    requirements.append('kerberos')
+    dependencies.append('https://github.com/alxchk/ccs-kerberos/archive/master.zip')
 
 setup(
     name='urllib-auth',
