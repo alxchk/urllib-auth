@@ -17,7 +17,7 @@ not desirable.
 
 import sys
 
-requirements = ['pycryptodome']
+requirements = ['ntlm_auth']
 dependencies = []
 
 if sys.platform == 'win32':

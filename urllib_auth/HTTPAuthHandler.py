@@ -11,21 +11,43 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library.  If not, see <http://www.gnu.org/licenses/> or <http://www.gnu.org/licenses/lgpl.txt>.
 
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+
 import sys
 import socket
 import re
 import ssl
 import logging
 
+
 if sys.version_info.major > 2:
     from urllib.response import addinfourl
     from urllib.request import BaseHandler, HTTPPasswordMgr
-    from urllib.error import URLError
+    from urllib.request import (
+        ProxyDigestAuthHandler, AbstractBasicAuthHandler,
+        AbstractDigestAuthHandler
+    )
+    from urllib.parse import urlparse
+    from urllib.error import URLError, HTTPError
     from http.client import HTTPSConnection, HTTPConnection
+
+    def infourl_to_sock(infourl):
+        return infourl.fp.raw._sock
+
 else:
     from urllib import addinfourl
-    from urllib2 import BaseHandler, HTTPPasswordMgr, URLError
+    from urllib2 import BaseHandler, HTTPPasswordMgr, URLError, HTTPError
+    from urllib2 import urlparse
+    from urllib2 import (
+        AbstractBasicAuthHandler, AbstractDigestAuthHandler
+    )
     from httplib import HTTPSConnection, HTTPConnection
+
+    def infourl_to_sock(infourl):
+        return infourl.fp._sock.fp._sock
 
 
 from .auth import (
@@ -33,10 +55,6 @@ from .auth import (
     AuthenticationError,
     get_supported_methods
 )
-
-
-def infourl_to_sock(infourl):
-    return infourl.fp._sock.fp._sock
 
 
 def infourl_to_ssl_context(infourl):
@@ -83,7 +101,8 @@ def consume_response_body(response):
 
 class AbstractAuthHandler(Authentication):
     __slots__ = (
-        'passwd', 'add_password', '_debuglevel'
+        'passwd', 'add_password', 'parent', '_debuglevel',
+        '_basic', '_digest'
     )
 
     auth_header_request = None
@@ -105,10 +124,21 @@ Verify "normal" operation.
         if password_mgr is None:
             password_mgr = HTTPPasswordMgr()
 
+        self.parent = None
         self.passwd = password_mgr
         self.add_password = self.passwd.add_password
 
         self._debuglevel = debuglevel
+
+        self._basic = AbstractBasicAuthHandler(password_mgr=self.passwd)
+        self._digest = AbstractDigestAuthHandler(passwd=self.passwd)
+
+    def add_parent(self, parent):
+        self.parent = parent
+
+        for default in (self._basic, self._digest):
+            setattr(default, 'auth_header', self.auth_header_response)
+            setattr(default, 'parent', parent)
 
     def set_logger(self, logger):
         self.logger = logger.getChild('urllib_auth')
@@ -116,30 +146,42 @@ Verify "normal" operation.
     def set_http_debuglevel(self, level):
         self._debuglevel = level
 
-    def get_authentication_methods(self, headers):
+    def get_authentication_methods(self, headers, extra):
         methods = set()
 
-        for header in headers.getallmatchingheaders(self.auth_header_response):
-            _, value = header.split(':', 1)
-            values = tuple(x.strip().lower() for x in value.split(','))
-            for value in values:
-                methods.add(value)
+        if sys.version_info.major > 2:
+            values = headers.get_all(self.auth_header_response)
+        else:
+            values = headers.getheaders(self.auth_header_response)
 
-        return get_supported_methods(methods)
+        for value in values:
+            methods.add(value)
 
-    def http_error_authentication_required(self, req, infourl, headers):
-        url = req.get_full_url()
+        supported, unsupported = get_supported_methods(methods, extra)
 
-        methods, unsupported = self.get_authentication_methods(headers)
+        return supported, unsupported
+
+    def http_error_authentication_required(self, target, req, infourl, headers):
+
+
+        extra = {
+            'method': req.get_method(),
+            'host': req.host,
+            'selector': req.selector
+            if sys.version_info.major > 2 else req.get_selector(),
+            'url': req.get_full_url()
+        }
+
+        methods, unsupported = self.get_authentication_methods(headers, extra)
         if not methods:
             self.logger.warning(
-                'No supported auth method: URL=%s, methods=%s',
-                url, unsupported)
+                'No supported auth method: Target=%s, methods=%s, headers=%s',
+                target, unsupported, headers)
             return
 
         self.logger.info(
-            'Auth required: URL: %s (methods: supported=%s, unsupported=%s)',
-            url, ','.join(methods), ','.join(unsupported)
+            'Auth required: Target: %s (methods: supported=%s, unsupported=%s)',
+            target, methods, unsupported
         )
 
         return self.retry_using_http_auth(req, infourl, methods, headers)
@@ -152,7 +194,8 @@ Verify "normal" operation.
         headers.update(req.unredirected_hdrs)
 
         url = req.get_full_url()
-        host = req.get_host()
+        host = req.host
+
         if not host:
             raise URLError('no host given')
 
@@ -166,9 +209,6 @@ Verify "normal" operation.
         try:
             more, method, payload = self.create_auth1_message(
                 domain, user, pw, url, auth_methods, certificate)
-            if not more:
-                self.logger.error('Something went wrong?')
-                return None
 
         except AuthenticationError:
             self.logger.warning(
@@ -181,7 +221,7 @@ Verify "normal" operation.
 
         headers.update({
             self.auth_header_request: ' '.join([method, payload]),
-            'Connection': 'keep-alive'
+            'Connection': 'keep-alive' if more else 'close'
         })
 
         h = None
@@ -224,7 +264,12 @@ Verify "normal" operation.
 
         payload = None
 
-        h.request(req.get_method(), req.get_selector(), req.data, headers)
+        if sys.version_info.major > 2:
+            selector = req.selector
+        else:
+            selector = req.get_selector()
+
+        h.request(req.get_method(), selector, req.data, headers)
         response = h.getresponse()
 
         if response.getheader('set-cookie'):
@@ -241,27 +286,30 @@ Verify "normal" operation.
                 continue
 
             match = re.match(
-                r'^(?:{}\s+)?([A-Za-z0-9+\-/=]+)$'.format(method), value)
+                r'^(?:{}\s+)?([A-Za-z0-9+\-/=]+)$'.format(method),
+                value, re.IGNORECASE
+            )
             if not match:
                 self.logger.debug('Not matched value: %s = %s', header, value)
                 continue
 
             payload, = match.groups()
 
-        if not payload:
-            self.logger.error(
-                'Auth header response not found, Status=%s URL=%s',
-                response.status, url)
+        if more:
+            if not payload:
+                self.logger.error(
+                    'Auth header response not found, Status=%s URL=%s',
+                    response.status, url)
 
-            return None
+                return None
 
-        self.logger.debug('Step2: Method: %s, Payload: %s', method, payload)
+            self.logger.debug('Step2: Method: %s, Payload: %s', method, payload)
 
-        try:
-            more, method, payload = self.create_auth2_message(payload)
-        except AuthenticationError as e:
-            self.logger.error('Step2: Authentication failed (%s)', e)
-            return None
+            try:
+                more, method, payload = self.create_auth2_message(payload)
+            except AuthenticationError as e:
+                self.logger.error('Step2: Authentication failed (%s)', e)
+                return None
 
         if more:
             self.logger.debug(
@@ -271,8 +319,12 @@ Verify "normal" operation.
             try:
                 consume_response_body(response)
 
-                h.request(req.get_method(), req.get_selector(),
-                          req.data, headers)
+                if sys.version_info.major > 2:
+                    selector = req.selector
+                else:
+                    selector = req.get_selector()
+
+                h.request(req.get_method(), selector, req.data, headers)
                 # none of the configured handlers are triggered, for example
                 # redirect-responses are not handled!
                 response = h.getresponse()
@@ -283,7 +335,7 @@ Verify "normal" operation.
 
         else:
             self.logger.debug(
-                'Step2: Method: %s, Continuation not required'
+                'Step2: Method: %s, Continuation not required', method
             )
 
         infourl = make_infourl(response, req)
@@ -302,13 +354,16 @@ class HTTPAuthHandler(AbstractAuthHandler, BaseHandler):
 
     auth_header_request = 'Authorization'
     auth_header_response = 'www-authenticate'
+    auth_is_proxy = False
 
     def http_error_401(self, req, fp, code, msg, headers):
+        url = req.get_full_url()
+
         try:
-            return self.http_error_authentication_required(req, fp, headers)
+            return self.http_error_authentication_required(url, req, fp, headers)
         except Exception as e:
             self.logger.exception(
-                'HTTPAuthHandler (url=%s): %s', req.get_full_url(), e)
+                'HTTPAuthHandler (url=%s): %s', url, e)
 
 
 class ProxyAuthHandler(AbstractAuthHandler, BaseHandler):
@@ -316,12 +371,16 @@ class ProxyAuthHandler(AbstractAuthHandler, BaseHandler):
         CAUTION: this class has NOT been tested at all!!!
         use at your own risk
     """
-    auth_header_request = 'Proxy-authorization'
+
+    auth_header_request = 'proxy-authorization'
     auth_header_response = 'proxy-authenticate'
+    auth_is_proxy = True
 
     def http_error_407(self, req, fp, code, msg, headers):
+        host = req.host
+
         try:
-            return self.http_error_authentication_required(req, fp, headers)
+            return self.http_error_authentication_required(host, req, fp, headers)
         except Exception as e:
             self.logger.exception(
-                'ProxyAuthHandler (url=%s): %s', req.get_full_url(), e)
+                'ProxyAuthHandler (Host=%s): %s', host, e)
