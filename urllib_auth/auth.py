@@ -271,7 +271,7 @@ class Authentication(object):
             repr(application_data), self._channel_bindings
         )
 
-    def create_auth1_message(self, domain, user, pw, url, auth_methods, certificate):
+    def create_auth1_message(self, domain, user, pw, url, auth_methods, certificate=None):
         supported_auth_methods, _ = get_supported_methods(auth_methods)
         for method in supported_auth_methods:
             try:
@@ -280,6 +280,10 @@ class Authentication(object):
                     certificate=certificate
                 )
 
+            except self._kerberos.GSSError as e:
+                self.logger.info(
+                    'GSS error: method=%s error=%s (ignore)', method, e)
+
             except NotImplementedError:
                 self.logger.debug(
                     'Not supported conditions for method %s', method)
@@ -287,6 +291,8 @@ class Authentication(object):
             except AuthenticationError as e:
                 self.logger.info(
                     'SSPI error: method=%s error=%s (ignore)', method, e)
+
+        self._ctx = None
 
         self.logger.debug(
             'No usable SSPI/GSSAPI auth method found for URL=%s', url)
