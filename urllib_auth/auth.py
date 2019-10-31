@@ -1,3 +1,10 @@
+__all__ = (
+    'METHOD_NTLM', 'METHOD_NEGOTIATE', 'METHOD_KERBEROS',
+    'KerberosBackend',
+    'AuthenticationError', 'Authentication',
+    'get_supported_methods'
+)
+
 import urlparse
 import hashlib
 
@@ -10,34 +17,6 @@ from .ntlm import (
     create_NTLM_AUTHENTICATE_MESSAGE
 )
 
-has_gssapi_support = False
-has_sspi_ntlm_support = False
-has_sspi_nego_support = False
-
-CONTINUE = 0
-COMPLETE = 1
-
-try:
-    import winkerberos as kerberos
-
-    has_sspi_ntlm_support = True
-    has_sspi_nego_support = True
-
-    CONTINUE = kerberos.AUTH_GSS_CONTINUE
-    COMPLETE = kerberos.AUTH_GSS_COMPLETE
-
-except ImportError:
-    try:
-        import kerberos
-
-        has_gssapi_support = True
-
-        CONTINUE = kerberos.AUTH_GSS_CONTINUE
-        COMPLETE = kerberos.AUTH_GSS_COMPLETE
-
-    except ImportError:
-        kerberos = None
-
 METHOD_NTLM = 'NTLM'
 METHOD_NEGOTIATE = 'Negotiate'
 METHOD_KERBEROS = 'Kerberos'
@@ -45,6 +24,43 @@ METHOD_KERBEROS = 'Kerberos'
 METHODS_PRIORITY = (
     METHOD_NEGOTIATE, METHOD_NTLM, METHOD_KERBEROS
 )
+
+
+class KerberosBackend(object):
+    __slots__ = (
+        'kerberos',
+        'CONTINUE', 'COMPLETE',
+        'has_sspi_ntlm_support',
+        'has_sspi_nego_support',
+        'has_gssapi_support'
+    )
+
+    def __init__(self):
+        self.has_gssapi_support = False
+        self.has_sspi_ntlm_support = False
+        self.has_sspi_nego_support = False
+
+        self.CONTINUE = 0
+        self.COMPLETE = 1
+        self.kerberos = None
+
+        try:
+            self.kerberos = __import__('winkerberos')
+            self.has_sspi_ntlm_support = True
+            self.has_sspi_nego_support = True
+
+        except ImportError:
+            try:
+                self.kerberos = __import__('kerberos')
+
+                self.has_gssapi_support = True
+
+            except ImportError:
+                self.kerberos = None
+
+    def __getattr__(self, attr):
+        if self.kerberos:
+            return getattr(self.kerberos, attr)
 
 
 def _get_method(method):
@@ -79,6 +95,7 @@ class Authentication(object):
         '_channel_bindings',
 
         '_ntlm_user', '_ntlm_domain', '_ntlm_password',
+        '_kerberos'
     )
 
     def __init__(self, logger):
@@ -89,6 +106,7 @@ class Authentication(object):
         self._ntlm_domain = None
         self._ntlm_password = None
         self._channel_bindings = None
+        self._kerberos = KerberosBackend()
 
     def _create_auth1_message_sspi(
             self, url, method, user=None,
@@ -117,20 +135,21 @@ class Authentication(object):
 
         need_inquire_cred = False
 
-        if (has_sspi_nego_support or has_gssapi_support) and method in (
+        if (self._kerberos.has_sspi_nego_support or
+            self._kerberos.has_gssapi_support) and method in (
                 METHOD_NEGOTIATE, METHOD_KERBEROS):
 
             if certificate:
                 self.set_certificate(certificate)
 
             if method == METHOD_NEGOTIATE:
-                mech_oid = kerberos.GSS_MECH_OID_SPNEGO
+                mech_oid = self._kerberos.GSS_MECH_OID_SPNEGO
             else:
-                mech_oid = kerberos.GSS_MECH_OID_KRB5
+                mech_oid = self._kerberosGSS_MECH_OID_KRB5
 
             flags |= \
-                kerberos.GSS_C_MUTUAL_FLAG | \
-                kerberos.GSS_C_SEQUENCE_FLAG
+                self._kerberos.GSS_C_MUTUAL_FLAG | \
+                self._kerberos.GSS_C_SEQUENCE_FLAG
 
             kwargs.update({
                 'mech_oid': mech_oid,
@@ -139,20 +158,20 @@ class Authentication(object):
 
             server = service + '@' + hostname
 
-            if has_gssapi_support:
+            if self._kerberos.has_gssapi_support:
                 del kwargs['user']
                 del kwargs['domain']
 
                 if user and domain:
                     principal = user + '@' + domain
-                
+
                 if not kwargs['password']:
                     need_inquire_cred = True
                     del kwargs['password']
 
-        elif has_sspi_ntlm_support and method == METHOD_NTLM:
+        elif self._kerberos.has_sspi_ntlm_support and method == METHOD_NTLM:
             # This is only for SSPI
-            kwargs['mech_oid'] = kerberos.GSS_MECH_OID_NTLM
+            kwargs['mech_oid'] = self._kerberos.GSS_MECH_OID_NTLM
             server = hostname
 
         else:
@@ -161,7 +180,7 @@ class Authentication(object):
         result = 0
 
         try:
-            result, self._ctx = kerberos.authGSSClientInit(
+            result, self._ctx = self._kerberos.authGSSClientInit(
                 server, principal, **kwargs
             )
 
@@ -171,7 +190,7 @@ class Authentication(object):
                     "ccs-kerberos doesn't support password auth")
 
             del kwargs['password']
-            result, self._ctx = kerberos.authGSSClientInit(
+            result, self._ctx = self._kerberos.authGSSClientInit(
                 server, principal, **kwargs
             )
 
@@ -185,20 +204,20 @@ class Authentication(object):
         )
 
         if need_inquire_cred:
-            result = kerberos.authGSSClientInquireCred(self._ctx)
+            result = self._kerberos.authGSSClientInquireCred(self._ctx)
             if result < 0:
                 raise AuthenticationError(result)
 
             self.logger.warning(
                 'GSSAPI: Using principal: %s',
-                kerberos.authGSSClientUserName(self._ctx)
+                self._kerberos.authGSSClientUserName(self._ctx)
             )
 
         kwargs = {}
         if self._channel_bindings:
             kwargs['channel_bindings'] = self._channel_bindings
 
-        result = kerberos.authGSSClientStep(
+        result = self._kerberos.authGSSClientStep(
             self._ctx, '', **kwargs
         )
 
@@ -207,35 +226,36 @@ class Authentication(object):
             raise AuthenticationError(result)
 
         self._method = method
-        return result, method, kerberos.authGSSClientResponse(self._ctx)
+        return result, method, self._kerberos.authGSSClientResponse(self._ctx)
 
     def _create_auth2_message_sspi(self, payload):
         kwargs = {}
         if self._channel_bindings:
             kwargs['channel_bindings'] = self._channel_bindings
 
-        result = kerberos.authGSSClientStep(
+        result = self._kerberos.authGSSClientStep(
             self._ctx, payload, **kwargs
         )
 
-        payload = kerberos.authGSSClientResponse(self._ctx)
+        payload = self._kerberos.authGSSClientResponse(self._ctx)
 
         if result < 0:
-            self.logger.error('GSSAPI: authGSSClientStep (2) Step Result: %d', result)
+            self.logger.error(
+                'GSSAPI: authGSSClientStep (2) Step Result: %d', result)
             raise AuthenticationError(result)
-        elif result == COMPLETE:
+        elif result == self._kerberos.COMPLETE:
             if payload is not None:
                 if self._method != METHOD_NTLM:
                     # Known bug for NTLM and winkerberos
                     self.logger.warning(
                         'GSSAPI: API bug: payload provided but step is not required')
-                result = CONTINUE
+                result = self._kerberos.CONTINUE
             else:
                 self.logger.info(
                     'GSSAPI: authGSSClientStep (2) not required for %s',
                     self._method)
 
-        return result, self._method, payload
+        return result == self._kerberos.CONTINUE, self._method, payload
 
     def set_certificate(self, certificate):
         # FIXME: Handle case with different hash function somehow..
@@ -243,7 +263,7 @@ class Authentication(object):
         application_data = b'tls-server-end-point:' + hashlib.sha256(
             certificate).digest()
 
-        self._channel_bindings = kerberos.channelBindings(
+        self._channel_bindings = self._kerberos.channelBindings(
             application_data=application_data)
 
         self.logger.debug(
@@ -275,9 +295,11 @@ class Authentication(object):
             self.logger.info('No credentials found for URL=%s', url)
 
         if METHOD_NTLM not in auth_methods or not user:
-            raise AuthenticationError('No acceptable auth found for: URL: %s', url)
+            raise AuthenticationError(
+                'No acceptable auth found for: URL: %s', url)
 
-        self.logger.info('Fallback to py NTLM with creds: %s -> user=%s', url, user)
+        self.logger.info(
+            'Fallback to py NTLM with creds: %s -> user=%s', url, user)
 
         type1_flags = NTLM_TYPE1_FLAGS
         if domain is None:
@@ -289,7 +311,7 @@ class Authentication(object):
         self._ntlm_password = pw
         self._ntlm_domain = domain
 
-        return CONTINUE, self._method, create_NTLM_NEGOTIATE_MESSAGE(
+        return True, self._method, create_NTLM_NEGOTIATE_MESSAGE(
             user, type1_flags)
 
     def create_auth2_message(self, payload):
@@ -300,7 +322,7 @@ class Authentication(object):
             raise AuthenticationError('Invalid state (expected method NTLM)')
 
         ServerChallenge, NegotiateFlags = parse_NTLM_CHALLENGE_MESSAGE(payload)
-        return CONTINUE, self._method, create_NTLM_AUTHENTICATE_MESSAGE(
+        return True, self._method, create_NTLM_AUTHENTICATE_MESSAGE(
             ServerChallenge,
             self._ntlm_user, self._ntlm_domain, self._ntlm_password,
             NegotiateFlags

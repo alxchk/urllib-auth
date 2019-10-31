@@ -25,8 +25,8 @@ from urllib import addinfourl
 
 from .auth import (
     Authentication, METHOD_NTLM, METHOD_NEGOTIATE,
-    CONTINUE, COMPLETE, AuthenticationError,
-    get_supported_methods, kerberos
+    AuthenticationError,
+    get_supported_methods
 )
 
 
@@ -159,14 +159,15 @@ Verify "normal" operation.
         certificate = infourl_to_ssl_certificate(infourl)
 
         try:
-            result, method, payload = self.create_auth1_message(
+            more, method, payload = self.create_auth1_message(
                 domain, user, pw, url, auth_methods, certificate)
-            if result != CONTINUE:
-                self.logger.error('Something went wrong? %s', result)
+            if not more:
+                self.logger.error('Something went wrong?')
                 return None
 
         except AuthenticationError:
-            self.logger.warning('No way to perform authentication: URL=%s', url)
+            self.logger.warning(
+                'No way to perform authentication: URL=%s', url)
             return None
 
         self.logger.debug(
@@ -252,12 +253,12 @@ Verify "normal" operation.
         self.logger.debug('Step2: Method: %s, Payload: %s', method, payload)
 
         try:
-            status, method, payload = self.create_auth2_message(payload)
+            more, method, payload = self.create_auth2_message(payload)
         except AuthenticationError as e:
             self.logger.error('Step2: Authentication failed (%s)', e)
             return None
 
-        if status == CONTINUE:
+        if more:
             self.logger.debug(
                 'Step2: Method: %s, Response Payload: %s', method, payload)
             headers[self.auth_header_request] = ' '.join([method, payload])
@@ -266,7 +267,7 @@ Verify "normal" operation.
                 consume_response_body(response)
 
                 h.request(req.get_method(), req.get_selector(),
-                            req.data, headers)
+                          req.data, headers)
                 # none of the configured handlers are triggered, for example
                 # redirect-responses are not handled!
                 response = h.getresponse()
@@ -277,7 +278,8 @@ Verify "normal" operation.
 
         else:
             self.logger.debug(
-                'Step2: Method: %s, Continuation not required (%d)', method, status)
+                'Step2: Method: %s, Continuation not required'
+            )
 
         infourl = make_infourl(response, req)
         if infourl.code in (401, 407):
