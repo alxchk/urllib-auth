@@ -145,7 +145,7 @@ class Authentication(object):
             if method == METHOD_NEGOTIATE:
                 mech_oid = self._kerberos.GSS_MECH_OID_SPNEGO
             else:
-                mech_oid = self._kerberosGSS_MECH_OID_KRB5
+                mech_oid = self._kerberos.GSS_MECH_OID_KRB5
 
             flags |= \
                 self._kerberos.GSS_C_MUTUAL_FLAG | \
@@ -226,7 +226,8 @@ class Authentication(object):
             raise AuthenticationError(result)
 
         self._method = method
-        return result, method, self._kerberos.authGSSClientResponse(self._ctx)
+        return result == self._kerberos.CONTINUE, method, \
+            self._kerberos.authGSSClientResponse(self._ctx)
 
     def _create_auth2_message_sspi(self, payload):
         kwargs = {}
