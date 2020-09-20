@@ -1,9 +1,9 @@
-from auth import (
+from .auth import (
     METHOD_NTLM, METHOD_NEGOTIATE,
 
     AuthenticationError, Authentication
 )
 
-from HTTPAuthHandler import (
+from .HTTPAuthHandler import (
     HTTPAuthHandler, ProxyAuthHandler
 )
