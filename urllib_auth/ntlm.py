@@ -21,7 +21,8 @@ import re
 import binascii
 
 from socket import gethostname
-from des import DES
+
+from .des import DES
 
 NTLM_NegotiateUnicode = 0x00000001
 NTLM_NegotiateOEM = 0x00000002

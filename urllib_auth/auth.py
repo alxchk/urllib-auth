@@ -5,8 +5,14 @@ __all__ = (
     'get_supported_methods'
 )
 
-import urlparse
+import sys
 import hashlib
+
+if sys.version_info.major > 2:
+    from urllib.parse import urlparse
+else:
+    from urlparse import urlparse
+
 
 from .ntlm import (
     NTLM_TYPE1_FLAGS,
@@ -123,7 +129,7 @@ class Authentication(object):
             'gssflags': flags
         }
 
-        parsed = urlparse.urlparse(url)
+        parsed = urlparse(url)
         host = parsed.netloc
         scheme = parsed.scheme.upper()
         hostname = host.rsplit(':', 1)[0]

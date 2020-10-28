@@ -11,17 +11,22 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library.  If not, see <http://www.gnu.org/licenses/> or <http://www.gnu.org/licenses/lgpl.txt>.
 
-import urlparse
-import urllib2
-import httplib
+import sys
 import socket
-import ntlm
 import re
 import ssl
 import logging
 
+if sys.version_info.major > 2:
+    from urllib.response import addinfourl
+    from urllib.request import BaseHandler, HTTPPasswordMgr
+    from urllib.error import URLError
+    from http.client import HTTPSConnection, HTTPConnection
+else:
+    from urllib import addinfourl
+    from urllib2 import BaseHandler, HTTPPasswordMgr, URLError
+    from httplib import HTTPSConnection, HTTPConnection
 
-from urllib import addinfourl
 
 from .auth import (
     Authentication, METHOD_NTLM, METHOD_NEGOTIATE,
@@ -98,7 +103,7 @@ Verify "normal" operation.
         )
 
         if password_mgr is None:
-            password_mgr = urllib2.HTTPPasswordMgr()
+            password_mgr = HTTPPasswordMgr()
 
         self.passwd = password_mgr
         self.add_password = self.passwd.add_password
@@ -149,7 +154,7 @@ Verify "normal" operation.
         url = req.get_full_url()
         host = req.get_host()
         if not host:
-            raise urllib2.URLError('no host given')
+            raise URLError('no host given')
 
         user, pw = self.passwd.find_user_password(None, url)
         domain = None
@@ -189,9 +194,9 @@ Verify "normal" operation.
                 self.logger.exception('SSL Context not found')
                 old_ssl_context = None
 
-            h = httplib.HTTPSConnection(host, context=old_ssl_context)
+            h = HTTPSConnection(host, context=old_ssl_context)
         else:
-            h = httplib.HTTPConnection(host)
+            h = HTTPConnection(host)
 
         if self._debuglevel or self.logger.getEffectiveLevel() == logging.DEBUG:
             h.set_debuglevel(1)
@@ -274,7 +279,7 @@ Verify "normal" operation.
 
             except socket.error as err:
                 self.logger.exception('')
-                raise urllib2.URLError(err)
+                raise URLError(err)
 
         else:
             self.logger.debug(
@@ -293,7 +298,7 @@ Verify "normal" operation.
         return infourl
 
 
-class HTTPAuthHandler(AbstractAuthHandler, urllib2.BaseHandler):
+class HTTPAuthHandler(AbstractAuthHandler, BaseHandler):
 
     auth_header_request = 'Authorization'
     auth_header_response = 'www-authenticate'
@@ -306,7 +311,7 @@ class HTTPAuthHandler(AbstractAuthHandler, urllib2.BaseHandler):
                 'HTTPAuthHandler (url=%s): %s', req.get_full_url(), e)
 
 
-class ProxyAuthHandler(AbstractAuthHandler, urllib2.BaseHandler):
+class ProxyAuthHandler(AbstractAuthHandler, BaseHandler):
     """
         CAUTION: this class has NOT been tested at all!!!
         use at your own risk
