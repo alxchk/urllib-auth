@@ -87,11 +87,14 @@ class KerberosBackend(object):
         self.kerberos = None
 
         try:
+            if sys.platform != 'win32':
+                raise NotImplementedError()
+
             self.kerberos = __import__('winkerberos')
             self.has_sspi_ntlm_support = True
             self.has_sspi_nego_support = True
 
-        except ImportError:
+        except (ImportError, NotImplementedError):
             try:
                 self.kerberos = __import__('kerberos')
 

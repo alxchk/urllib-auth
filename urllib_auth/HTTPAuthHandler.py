@@ -280,9 +280,14 @@ Verify "normal" operation.
         # some Exchange servers send two WWW-Authenticate headers, one with the NTLM challenge
         # and another with the 'Negotiate' keyword - make sure we operate on the right one
 
+        expected_header = self.auth_header_response.lower()
+
         for header, value in response.getheaders():
-            if header.lower() != self.auth_header_response.lower():
-                self.logger.debug('Not matched header: %s = %s', header, value)
+            if header.lower() != expected_header:
+                self.logger.debug(
+                    'Not matched header: %s = %s (!= %s)',
+                    header.lower(), value, expected_header
+                )
                 continue
 
             match = re.match(
