@@ -344,7 +344,7 @@ Verify "normal" operation.
             )
 
         infourl = make_infourl(response, req)
-        if infourl.code in (401, 407):
+        if infourl.code == self.auth_code:
             self.logger.warning(
                 'Authentication failed: URL=%s, CODE=%s',
                 req.get_full_url(), infourl.code
@@ -360,6 +360,7 @@ class HTTPAuthHandler(AbstractAuthHandler, BaseHandler):
     auth_header_request = 'Authorization'
     auth_header_response = 'www-authenticate'
     auth_is_proxy = False
+    auth_code = 401
 
     def http_error_401(self, req, fp, code, msg, headers):
         url = req.get_full_url()
@@ -380,6 +381,7 @@ class ProxyAuthHandler(AbstractAuthHandler, BaseHandler):
     auth_header_request = 'proxy-authorization'
     auth_header_response = 'proxy-authenticate'
     auth_is_proxy = True
+    auth_code = 407
 
     def http_error_407(self, req, fp, code, msg, headers):
         host = req.host
