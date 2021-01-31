@@ -99,14 +99,14 @@ def consume_response_body(response):
         response.fp = None
 
 
-class AbstractAuthHandler(Authentication):
+class AuthHandler(Authentication):
     __slots__ = (
         'passwd', 'add_password', 'parent', '_debuglevel',
-        '_basic', '_digest'
-    )
+        '_basic', '_digest',
 
-    auth_header_request = None
-    auth_header_response = None
+        'auth_header_request', 'auth_header_response',
+        'auth_is_proxy', 'auth_code',
+    )
 
     def __init__(self, password_mgr=None, debuglevel=0):
         """Initialize an instance of a AbstractAuthHandler.
@@ -117,7 +117,7 @@ Verify operation with all default arguments.
 Verify "normal" operation.
 >>> abstrct = AbstractAuthHandler(urllib2.HTTPPasswordMgrWithDefaultRealm())
 """
-        super(AbstractAuthHandler, self).__init__(
+        super(AuthHandler, self).__init__(
             logging.getLogger('urllib_auth')
         )
 
@@ -132,6 +132,24 @@ Verify "normal" operation.
 
         self._basic = AbstractBasicAuthHandler(password_mgr=self.passwd)
         self._digest = AbstractDigestAuthHandler(passwd=self.passwd)
+
+        self.auth_header_request = None
+        self.auth_header_response = None
+        self.auth_is_proxy = None
+        self.auth_code = None
+
+    def set_auth_type(self, proxy=False):
+        if proxy:
+            self.auth_header_request = 'proxy-authorization'
+            self.auth_header_response = 'proxy-authenticate'
+            self.auth_is_proxy = True
+            self.auth_code = 407
+        else:
+            self.auth_header_request = 'Authorization'
+            self.auth_header_response = 'www-authenticate'
+            self.auth_is_proxy = False
+            self.auth_code = 401
+
 
     def add_parent(self, parent):
         self.parent = parent
@@ -162,8 +180,6 @@ Verify "normal" operation.
         return supported, unsupported
 
     def http_error_authentication_required(self, target, req, infourl, headers):
-
-
         extra = {
             'method': req.get_method(),
             'host': req.host,
@@ -184,9 +200,9 @@ Verify "normal" operation.
             target, methods, unsupported
         )
 
-        return self.retry_using_http_auth(req, infourl, methods, headers)
+        return self.retry_using_http_auth(target, req, infourl, methods, headers)
 
-    def retry_using_http_auth(self, req, infourl, auth_methods, headers):
+    def retry_using_http_auth(self, target, req, infourl, auth_methods, headers):
         connection = headers.get('connection')
 
         # ntlm secures a socket, so we must use the same socket for the complete handshake
@@ -199,7 +215,7 @@ Verify "normal" operation.
         if not host:
             raise URLError('no host given')
 
-        user, pw = self.passwd.find_user_password(None, url)
+        user, pw = self.passwd.find_user_password(None, target)
         domain = None
         if user is not None and '\\' in user:
             domain, user = user.split('\\', 1)
@@ -216,12 +232,14 @@ Verify "normal" operation.
             return None
 
         self.logger.debug(
-            'Selected auth method=%s payload=%s', method, payload
+            'Selected auth method=%s payload=%s more=%s', method, payload, more
         )
 
         headers.update({
             self.auth_header_request: ' '.join([method, payload]),
-            'Connection': 'keep-alive' if more else 'close'
+            'Connection': 'keep-alive' if (
+                more or self.auth_is_proxy
+            ) else 'close'
         })
 
         h = None
@@ -249,8 +267,8 @@ Verify "normal" operation.
             infourl.close()
             infourl = None
         else:
-            self.logger.debug('Reuse connection %s')
             h.sock = infourl_to_sock(infourl)
+            self.logger.debug('Reuse connection socket %s', h.sock)
 
         # We must keep the connection because NTLM authenticates the
         # connection, not single requests
@@ -291,14 +309,18 @@ Verify "normal" operation.
                 continue
 
             match = re.match(
-                r'^(?:{}\s+)?([A-Za-z0-9+\-/=]+)$'.format(method),
+                r'^(?:{}\s+)?([a-zA-Z].*)$'.format(method),
                 value, re.IGNORECASE
             )
             if not match:
-                self.logger.debug('Not matched value: %s = %s', header, value)
+                self.logger.debug(
+                    'Not matched value: %s = %s (method=%s)', header, value, method
+                )
                 continue
 
             payload, = match.groups()
+            self.logger.debug('Found auth header: %s = %s', header, payload)
+            break
 
         if more:
             if not payload:
@@ -355,15 +377,40 @@ Verify "normal" operation.
         return infourl
 
 
-class HTTPAuthHandler(AbstractAuthHandler, BaseHandler):
+class AnyAuthHandler(AuthHandler, BaseHandler):
+    def http_error_407(self, req, fp, code, msg, headers):
+        host = req.host
 
-    auth_header_request = 'Authorization'
-    auth_header_response = 'www-authenticate'
-    auth_is_proxy = False
-    auth_code = 401
+        self.set_auth_type(proxy=True)
+
+        try:
+            result = self.http_error_authentication_required(host, req, fp, headers)
+            if result is None:
+                self.logger.warning(
+                    'ProxyAuthHandler (Host=%s): Authentication attempts failed', host
+                )
+
+                return None
+
+            # It's possible, that after proxy auth we also need to auth to resource
+            if result.code == 401:
+                # Here we need to read response first
+
+                fp = result.fp
+                consume_response_body(result)
+
+                return self.http_error_401(
+                    req, fp, result.code, result.msg, result.headers
+                )
+
+        except Exception as e:
+            self.logger.exception(
+                'ProxyAuthHandler (Host=%s): %s', host, e)
 
     def http_error_401(self, req, fp, code, msg, headers):
         url = req.get_full_url()
+
+        self.set_auth_type(proxy=False)
 
         try:
             return self.http_error_authentication_required(url, req, fp, headers)
@@ -372,22 +419,4 @@ class HTTPAuthHandler(AbstractAuthHandler, BaseHandler):
                 'HTTPAuthHandler (url=%s): %s', url, e)
 
 
-class ProxyAuthHandler(AbstractAuthHandler, BaseHandler):
-    """
-        CAUTION: this class has NOT been tested at all!!!
-        use at your own risk
-    """
-
-    auth_header_request = 'proxy-authorization'
-    auth_header_response = 'proxy-authenticate'
-    auth_is_proxy = True
-    auth_code = 407
-
-    def http_error_407(self, req, fp, code, msg, headers):
-        host = req.host
-
-        try:
-            return self.http_error_authentication_required(host, req, fp, headers)
-        except Exception as e:
-            self.logger.exception(
-                'ProxyAuthHandler (Host=%s): %s', host, e)
+ProxyAuthHandler = HTTPAuthHandler = AnyAuthHandler

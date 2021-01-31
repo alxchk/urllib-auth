@@ -28,7 +28,7 @@ else:
 
 setup(
     name='urllib-auth',
-    version='1.2',
+    version='1.3',
     description='NTLM/SPNEGO/SSP auth helper, with urllib support. Based on python-ntlm',
     long_description=long_description,
     author='Oleksii Shevchuk',
@@ -45,6 +45,5 @@ setup(
         "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)"
         'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 2.7',
     ],
 )
