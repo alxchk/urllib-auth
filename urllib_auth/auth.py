@@ -108,6 +108,17 @@ class KerberosBackend(object):
             return getattr(self.kerberos, attr)
 
 
+_CACHED_KERBEROS_BACKEND = None
+
+def _get_kerberos_backend():
+    global _CACHED_KERBEROS_BACKEND
+
+    if _CACHED_KERBEROS_BACKEND is None:
+        _CACHED_KERBEROS_BACKEND = KerberosBackend()
+
+    return _CACHED_KERBEROS_BACKEND
+
+
 def _get_method(method, extra={}, priorities=METHODS_PRIORITY_SECURE):
     if isinstance(method, Method):
         return method
@@ -163,13 +174,16 @@ class Authentication(object):
         '_kerberos'
     )
 
-    def __init__(self, logger):
+    def __init__(self, logger, kerberos=None):
         self.logger = logger
         self._ctx = None
         self._method = None
         self._sspi = False
         self._channel_bindings = None
-        self._kerberos = KerberosBackend()
+        self._kerberos = kerberos
+
+        if self._kerberos is None:
+            self._kerberos = _get_kerberos_backend()
 
     def _create_auth1_message_sspi(
             self, url, method_data, user=None,

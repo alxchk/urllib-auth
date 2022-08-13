@@ -9,7 +9,8 @@
 # Lesser General Public License for more details.
 #
 # You should have received a copy of the GNU Lesser General Public
-# License along with this library.  If not, see <http://www.gnu.org/licenses/> or <http://www.gnu.org/licenses/lgpl.txt>.
+# License along with this library.  If not, see <http://www.gnu.org/licenses/>
+# or <http://www.gnu.org/licenses/lgpl.txt>.
 
 from __future__ import absolute_import
 from __future__ import division
@@ -22,36 +23,36 @@ import re
 import ssl
 import logging
 
+import _socket
 
 if sys.version_info.major > 2:
     from urllib.response import addinfourl
     from urllib.request import BaseHandler, HTTPPasswordMgr
-    from urllib.request import (
-        ProxyDigestAuthHandler, AbstractBasicAuthHandler,
-        AbstractDigestAuthHandler
-    )
-    from urllib.parse import urlparse
-    from urllib.error import URLError, HTTPError
+    from urllib.error import URLError
     from http.client import HTTPSConnection, HTTPConnection
 
     def infourl_to_sock(infourl):
-        return infourl.fp.raw._sock
+        if isinstance(infourl.fp.raw, (ssl.SSLSocket, _socket.socket)):
+            return infourl.fp.raw
+
+        if infourl.fp is not None:
+            return infourl.fp.raw._sock
 
 else:
     from urllib import addinfourl
-    from urllib2 import BaseHandler, HTTPPasswordMgr, URLError, HTTPError
-    from urllib2 import urlparse
-    from urllib2 import (
-        AbstractBasicAuthHandler, AbstractDigestAuthHandler
-    )
+    from urllib2 import BaseHandler, HTTPPasswordMgr, URLError
     from httplib import HTTPSConnection, HTTPConnection
 
     def infourl_to_sock(infourl):
-        return infourl.fp._sock.fp._sock
+        if infourl.fp is not None:
+            if isinstance(infourl.fp._sock, (ssl.SSLSocket, _socket.socket)):
+                return infourl.fp._sock
+
+            return infourl.fp._sock.fp._sock
 
 
 from .auth import (
-    Authentication, METHOD_NTLM, METHOD_NEGOTIATE,
+    Authentication,
     AuthenticationError,
     get_supported_methods
 )
@@ -67,6 +68,9 @@ def infourl_to_ssl_context(infourl):
 
 def infourl_to_ssl_certificate(infourl):
     sock = infourl_to_sock(infourl)
+    if sock is None:
+        return None
+
     if not isinstance(sock, ssl.SSLSocket):
         return None
 
@@ -86,6 +90,8 @@ def make_infourl(response, req, fp=None):
 
 
 def consume_response_body(response):
+
+
     content_length = response.getheader('content-length')
     if content_length:
         content_length = int(content_length)
@@ -130,9 +136,6 @@ Verify "normal" operation.
 
         self._debuglevel = debuglevel
 
-        self._basic = AbstractBasicAuthHandler(password_mgr=self.passwd)
-        self._digest = AbstractDigestAuthHandler(passwd=self.passwd)
-
         self.auth_header_request = None
         self.auth_header_response = None
         self.auth_is_proxy = None
@@ -145,18 +148,13 @@ Verify "normal" operation.
             self.auth_is_proxy = True
             self.auth_code = 407
         else:
-            self.auth_header_request = 'Authorization'
+            self.auth_header_request = 'authorization'
             self.auth_header_response = 'www-authenticate'
             self.auth_is_proxy = False
             self.auth_code = 401
 
-
     def add_parent(self, parent):
         self.parent = parent
-
-        for default in (self._basic, self._digest):
-            setattr(default, 'auth_header', self.auth_header_response)
-            setattr(default, 'parent', parent)
 
     def set_logger(self, logger):
         self.logger = logger.getChild('urllib_auth')
@@ -290,6 +288,8 @@ Verify "normal" operation.
         h.request(req.get_method(), selector, req.data, headers)
         response = h.getresponse()
 
+        infourl = make_infourl(response, req)
+
         if response.getheader('set-cookie'):
             # this is important for some web applications that store authentication-related
             # info in cookies (it took a long time to figure out)
@@ -328,7 +328,7 @@ Verify "normal" operation.
                     'Auth header response not found, Status=%s URL=%s',
                     response.status, url)
 
-                return None
+                return infourl
 
             self.logger.debug('Step2: Method: %s, Payload: %s', method, payload)
 
@@ -336,7 +336,7 @@ Verify "normal" operation.
                 more, method, payload = self.create_auth2_message(payload)
             except AuthenticationError as e:
                 self.logger.error('Step2: Authentication failed (%s)', e)
-                return None
+                return infourl
 
         if more:
             self.logger.debug(
@@ -356,6 +356,8 @@ Verify "normal" operation.
                 # redirect-responses are not handled!
                 response = h.getresponse()
 
+                infourl = make_infourl(response, req)
+
             except socket.error as err:
                 self.logger.exception('')
                 raise URLError(err)
@@ -365,7 +367,6 @@ Verify "normal" operation.
                 'Step2: Method: %s, Continuation not required', method
             )
 
-        infourl = make_infourl(response, req)
         if infourl.code == self.auth_code:
             self.logger.warning(
                 'Authentication failed: URL=%s, CODE=%s',
@@ -397,11 +398,38 @@ class AnyAuthHandler(AuthHandler, BaseHandler):
                 # Here we need to read response first
 
                 fp = result.fp
-                consume_response_body(result)
 
-                return self.http_error_401(
+                if sys.version_info.major > 2:
+                    # With python3 it's possible to reuse this method
+                    consume_response_body(result)
+
+                elif result.fp:
+                    # With python2 need to do that manually
+                    # Result.fp is the HTTPResponse object, once read, fp
+                    # will be closed. This is not what we need. So we'll
+                    # read content-length manually from .fp.fp.
+
+                    content_length = result.headers.getheader('content-length')
+                    if content_length:
+                        content_length = int(content_length)
+                        result.fp.fp.read(content_length)
+
+                result_401 = self.http_error_401(
                     req, fp, result.code, result.msg, result.headers
                 )
+
+                # We are going to return previous result
+                # BUT it must be closed, as it was consumed before calling
+                # self.http_error_401. It will hang overwise.
+
+                if result_401 is not None:
+                    result = result_401
+                elif sys.version_info.major > 2:
+                    result.file.fp = None
+                else:
+                    result.fp.fp = None
+
+            return result
 
         except Exception as e:
             self.logger.exception(
