@@ -28,7 +28,7 @@ else:
 
 setup(
     name='urllib-auth',
-    version='1.4',
+    version='1.5',
     description='NTLM/SPNEGO/SSP auth helper, with urllib support. Based on python-ntlm',
     long_description=long_description,
     author='Oleksii Shevchuk',

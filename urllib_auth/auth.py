@@ -107,6 +107,10 @@ class KerberosBackend(object):
         if self.kerberos:
             return getattr(self.kerberos, attr)
 
+        if attr == 'GSSError':
+            # Return something dummy to not to break exception handling
+            return Exception
+
 
 _CACHED_KERBEROS_BACKEND = None
 
@@ -444,10 +448,6 @@ class Authentication(object):
                         certificate=certificate
                     )
 
-                except self._kerberos.GSSError as e:
-                    self.logger.info(
-                        'GSS error: method=%s error=%s (ignore)', method, e)
-
                 except NotImplementedError:
                     self.logger.debug(
                         'Not supported conditions for method %s', method)
@@ -455,6 +455,10 @@ class Authentication(object):
                 except AuthenticationError as e:
                     self.logger.info(
                         'SSPI error: method=%s error=%s (ignore)', method, e)
+
+                except self._kerberos.GSSError as e:
+                    self.logger.info(
+                        'GSS error: method=%s error=%s (ignore)', method, e)
 
                 self._ctx = None
 
